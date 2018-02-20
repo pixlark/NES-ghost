@@ -10,6 +10,91 @@
 #include "astar.h"
 #include "heap.h"
 
+#define REFACTOR 0
+
+#if REFACTOR
+struct Texture {
+	Vector2i pos;
+	Vector2i dim;
+	Vector2f scale;
+};
+
+struct Entity {
+	Vector2i pos;
+	Texture  tex;
+};
+
+struct Window {
+	SDL_Window * sdl;
+	uint32_t last_time;
+	float delta_time = 0.0167;
+};
+
+void draw_entity(Entity * e)
+{
+	Render::render(e->pos, e->tex.pos, e->tex.dim, e->tex.scale);
+}
+
+Window get_window()
+{
+	Vector2i base_res(256, 240);
+	float res_scale = 4.0;
+	Window window;
+	window.sdl = SDL_CreateWindow("NES game",
+		SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
+		base_res.x * res_scale, base_res.y * res_scale,
+		SDL_WINDOW_SHOWN|SDL_WINDOW_OPENGL);
+	{
+		List<char> exe_path = get_exe_dir();
+		exe_path.cat("..\\atlas.png", 13, 1);
+		printf("Loading atlas from %s\n", exe_path.arr);
+	
+		Render::init(window.sdl, exe_path.arr, base_res, res_scale);
+
+		exe_path.dealloc();
+	}
+	window.last_time = SDL_GetPerformanceCounter();
+}
+
+void tick_delta_time(Window * w)
+{
+	// Manage framerate
+	{
+		uint32_t new_time = SDL_GetPerformanceCounter();
+		w->delta_time = (float) (new_time - w->last_time) / SDL_GetPerformanceFrequency();
+		w->last_time = new_time;
+	}
+	if (w->delta_time < 1.0 / 60.0) {
+		SDL_Delay(((1.0 / 60.0) - w->delta_time) * 1000);
+	}
+}
+
+int main()
+{
+	srand(time(NULL));
+	
+	SDL_Init(SDL_INIT_VIDEO);
+	Window window = get_window();
+	
+	SDL_Event event;
+	bool running = true;
+	while (running) {
+		while (SDL_PollEvent(&event) != 0) {
+			switch (event.type) {
+			case SDL_QUIT:
+				running = false;
+			}
+		}
+		Render::clear(RGBA(36, 56, 225, 255));
+		Render::render(Vector2i(0, 0), Vector2i(0, 0), Vector2i(16, 16), Vector2f(1, 1));
+		Render::swap(window.sdl);
+		tick_delta_time(&window);
+	}
+	return 0;
+}
+
+#else
+
 #define PLAY_W 16
 #define PLAY_H 13
 
@@ -354,3 +439,4 @@ int main()
 	
 	return 0;
 }
+#endif
