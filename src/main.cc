@@ -10,62 +10,276 @@
 #include "astar.h"
 #include "heap.h"
 
-#define REFACTOR 0
+#define REFACTOR 1
 
 #if REFACTOR
+
+Vector2i directions[] = {
+	{+0, -1}, // UP
+	{-1, +0}, // LEFT
+	{+0, +1}, // DOWN
+	{+1, +0}, // RIGHT
+};
+
 struct Texture {
 	Vector2i pos;
 	Vector2i dim;
 	Vector2f scale;
 };
 
+enum EntityType {
+	ENTITY,
+	PLAYER,
+};
+
 struct Entity {
 	Vector2i pos;
+	Vector2i grid_pos;
+	Vector2i target_pos;
+	float move_t;
+	bool moving;
 	Texture  tex;
+	EntityType type;
+};
+
+struct Player : Entity {
+	int power_max = 0;
+	int power_level;
+	Vector2i direction;
+	Vector2i queued_direction;
 };
 
 struct Window {
+	Vector2i res;
 	SDL_Window * sdl;
 	uint32_t last_time;
 	float delta_time = 0.0167;
 };
+
+static Window window;
+
+struct Level {
+	static const int play_w = 16;
+	static const int play_h = 13;
+	int grid[play_w * play_h];
+	Vector2i crystal_pos;
+	List<Entity> walls;
+};
+
+inline int to_index(Vector2i pos, int w = Level::play_w)
+{
+	return pos.x + pos.y * w;
+}
+
+inline int to_index(int x, int y, int w = Level::play_w)
+{
+	return x + y * w;
+}
+
+void make_entity(Entity * e, Vector2i pos, Texture tex)
+{
+	e->pos = Vector2i(pos.x * 16, pos.y * 16);
+	e->grid_pos = pos;
+	e->target_pos = pos;
+	e->move_t = 0;
+	e->tex = tex;
+	e->type = ENTITY;
+}
+
+void move_entity(Entity * e, Vector2i target)
+{
+	if (target.x == e->grid_pos.x && target.y == e->grid_pos.y) return;
+	e->moving = true;
+	e->move_t += window.delta_time;
+	float t = e->move_t / 0.5;
+	e->pos.x = (e->grid_pos.x * 16) + t * ((target.x - e->grid_pos.x) * 16);
+	e->pos.y = (e->grid_pos.y * 16) + t * ((target.y - e->grid_pos.y) * 16);
+	if (t >= 1) {
+		e->move_t = 0;
+		e->moving = false;
+		e->grid_pos = target;
+		e->pos.x = e->grid_pos.x * 16;
+		e->pos.y = e->grid_pos.y * 16;
+	}
+}
 
 void draw_entity(Entity * e)
 {
 	Render::render(e->pos, e->tex.pos, e->tex.dim, e->tex.scale);
 }
 
-Window get_window()
+void make_player(Player * p, Vector2i pos, int power_level)
 {
-	Vector2i base_res(256, 240);
+	Texture tex;
+	tex.pos = Vector2i(32 + (16 * power_level), 16);
+	tex.dim = Vector2i(16, 16);
+	tex.scale = Vector2f(1, 1);
+	make_entity(p, pos, tex);
+	p->power_level = power_level;
+	p->type = PLAYER;
+}
+
+void update_player(Player * p, Level * level)
+{
+	p->tex.pos = Vector2i(32 + (16 * p->power_level), 16);
+	if (!p->moving) {
+		if (!level->grid[to_index(p->grid_pos + p->queued_direction)]) {
+			p->direction = p->queued_direction;
+		} else {
+			p->direction = Vector2i(0, 0);
+		}
+	}
+	move_entity(p, p->grid_pos + p->direction);
+}
+
+void keydown_player(Player * p, SDL_Scancode scancode)
+{
+	switch (scancode) {
+	case SDL_SCANCODE_W: {
+		p->queued_direction = Vector2i(+0, -1);
+	} break;
+	case SDL_SCANCODE_A: {
+		p->queued_direction = Vector2i(-1, +0);
+	} break;
+	case SDL_SCANCODE_S: {
+		p->queued_direction = Vector2i(+0, +1);
+	} break;
+	case SDL_SCANCODE_D: {
+		p->queued_direction = Vector2i(+1, +0);
+	} break;
+	case SDL_SCANCODE_LEFT: {
+		if (p->power_level > 1) {
+			p->power_level--;
+		}
+	} break;
+	case SDL_SCANCODE_RIGHT: {
+		if (p->power_level < p->power_max) {
+			p->power_level++;
+		}
+	} break;
+	}
+}
+
+Window make_window()
+{
 	float res_scale = 4.0;
 	Window window;
+	window.res = Vector2i(256, 240);
 	window.sdl = SDL_CreateWindow("NES game",
 		SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
-		base_res.x * res_scale, base_res.y * res_scale,
+		window.res.x * res_scale, window.res.y * res_scale,
 		SDL_WINDOW_SHOWN|SDL_WINDOW_OPENGL);
 	{
 		List<char> exe_path = get_exe_dir();
 		exe_path.cat("..\\atlas.png", 13, 1);
 		printf("Loading atlas from %s\n", exe_path.arr);
 	
-		Render::init(window.sdl, exe_path.arr, base_res, res_scale);
+		Render::init(window.sdl, exe_path.arr, window.res, res_scale);
 
 		exe_path.dealloc();
 	}
 	window.last_time = SDL_GetPerformanceCounter();
+	return window;
 }
 
-void tick_delta_time(Window * w)
+bool v2_equality(Vector2i a, Vector2i b) {
+	return a.x == b.x && a.y == b.y;
+}
+
+void generate_level(Level * level, bool top_left)
 {
-	// Manage framerate
-	{
-		uint32_t new_time = SDL_GetPerformanceCounter();
-		w->delta_time = (float) (new_time - w->last_time) / SDL_GetPerformanceFrequency();
-		w->last_time = new_time;
+	auto add_walls_to_list = [level](Vector2i w, List<Vector2i> * l) {
+		for (int i = 0; i < 4; i++) {
+			Vector2i n = w + directions[i];
+			if (level->grid[to_index(n)]) {
+				if (l->find(n, v2_equality) == -1 &&
+					n.x >= 1 && n.x < Level::play_w - 1 && n.y >= 1 && n.y < Level::play_h - 1) {
+					l->push(n);
+				}
+			}
+		}
+	};
+	auto tunnel_from_point = [level, add_walls_to_list](Vector2i p) {
+		List<Vector2i> walls;
+		level->grid[to_index(p)] = 0;
+		walls.alloc();
+		add_walls_to_list(p, &walls);
+		while (1) {
+			if (walls.len == 0) break;
+			int wi = rand() % walls.len;
+			Vector2i w = walls[wi];
+			int bordering = 0;
+			for (int i = 0; i < 4; i++) {
+				if (!level->grid[to_index(w + directions[i])]) {
+					bordering++;
+				}
+			}
+			if (bordering == 1) {
+				level->grid[to_index(w)] = 0;
+				add_walls_to_list(w, &walls);
+			}
+			walls.remove(wi);
+		}
+		walls.dealloc();
+	};
+	Vector2i start;
+	if (top_left) {
+		start.x = 1;
+		start.y = 1;
+		level->crystal_pos.x = Level::play_w - 2;
+		level->crystal_pos.y = Level::play_h - 2;
+	} else {
+		start.x = Level::play_w - 2;
+		start.y = Level::play_h - 2;
+		level->crystal_pos.x = 1;
+		level->crystal_pos.y = 1;
 	}
-	if (w->delta_time < 1.0 / 60.0) {
-		SDL_Delay(((1.0 / 60.0) - w->delta_time) * 1000);
+	for (int i = 0; i < Level::play_w*Level::play_h; i++) level->grid[i] = 1;
+	tunnel_from_point(start);
+	{
+		Vector2i dir = top_left ? Vector2i(-1, -1) : Vector2i(1, 1);
+		while (level->grid[to_index(level->crystal_pos)]) {
+			// TODO(pixlark): This has about a 1/2048 chance (I
+			// think) of failing if the maze generation forms a
+			// perfect diagonal line.
+			level->crystal_pos += dir;
+		}
+	}
+	// Turn level into entity list that can be rendered
+	level->walls.dealloc();
+	level->walls.alloc();
+	for (int y = 0; y < Level::play_h; y++) {
+		for (int x = 0; x < Level::play_w; x++) {
+			if (level->grid[to_index(x, y)]) {
+				Entity e;
+				Texture t;
+				t.pos = Vector2i(32, 0);
+				t.dim = Vector2i(16, 16);
+				t.scale = Vector2f(1, 1);
+				make_entity(&e, Vector2i(x, y), t);
+				level->walls.push(e);
+			}
+		}
+	}
+}
+
+void draw_level(Level * level, int power)
+{
+	for (int i = 0; i < level->walls.len; i++) {
+		draw_entity(level->walls.arr + i);
+	}
+	Render::render(
+		Vector2i(level->crystal_pos.x * 16, level->crystal_pos.y * 16),
+		Vector2i(power * 16 + 48, 0), Vector2i(16, 16), Vector2f(1, 1));
+}
+
+void tick_delta_time()
+{
+	uint32_t new_time = SDL_GetPerformanceCounter();
+	window.delta_time = (float) (new_time - window.last_time) / SDL_GetPerformanceFrequency();
+	window.last_time = new_time;
+	if (window.delta_time < 1.0 / 60.0) {
+		SDL_Delay(((1.0 / 60.0) - window.delta_time) * 1000);
 	}
 }
 
@@ -74,7 +288,13 @@ int main()
 	srand(time(NULL));
 	
 	SDL_Init(SDL_INIT_VIDEO);
-	Window window = get_window();
+	window = make_window();
+
+	Player player;
+	make_player(&player, Vector2i(1, 1), 0);
+
+	Level level;
+	generate_level(&level, true);
 	
 	SDL_Event event;
 	bool running = true;
@@ -83,12 +303,33 @@ int main()
 			switch (event.type) {
 			case SDL_QUIT:
 				running = false;
+				break;
+			case SDL_KEYDOWN:
+				keydown_player(&player, event.key.keysym.scancode);
+				break;
 			}
 		}
+		update_player(&player, &level);
 		Render::clear(RGBA(36, 56, 225, 255));
-		Render::render(Vector2i(0, 0), Vector2i(0, 0), Vector2i(16, 16), Vector2f(1, 1));
+		draw_level(&level, player.power_max);
+		draw_entity(&player);
+		{
+			// Draw UI stuff
+			// TODO(pixlark): Put this all in a UI struct or something
+			for (int i = 0; i < 8; i++) {
+				if (i == player.power_level - 1) {
+					Render::render(Vector2i(i * 32, window.res.y - 32), Vector2i(0, 48), Vector2i(32, 32), Vector2i(1, 1));
+				} else {
+					Render::render(Vector2i(i * 32, window.res.y - 32), Vector2i(0, 16), Vector2i(32, 32), Vector2i(1, 1));
+				}
+			}
+			for (int i = 0; i < player.power_max; i++) {
+				Render::render(Vector2i(i * 32 + 8, window.res.y - 24), Vector2i(i * 16 + 48, 0), Vector2i(16, 16), Vector2i(1, 1));
+			}
+			Render::render(Vector2i(0, window.res.y - 48), Vector2i(0, 0), Vector2i(16, 16), Vector2f(16, 1));
+		}
 		Render::swap(window.sdl);
-		tick_delta_time(&window);
+		tick_delta_time();
 	}
 	return 0;
 }
@@ -99,16 +340,6 @@ int main()
 #define PLAY_H 13
 
 float delta_time = 0.0167;
-
-inline int to_index(Vector2i pos, int w = PLAY_W)
-{
-	return pos.x + pos.y * w;
-}
-
-inline int to_index(int x, int y, int w = PLAY_W)
-{
-	return x + y * PLAY_W;
-}
 
 Vector2i directions[] = {
 	{+0, -1}, // UP
