@@ -28,7 +28,7 @@ bool vert_equality(Vert a, Vert b)
 
 #define DEBUG_MODE 0
 List<Vector2i> a_star(
-	int * map, int width, int height,
+	const int * map, int width, int height,
 	Vector2i start, Vector2i dest)
 {
 	float * heu_map = (float*) malloc(sizeof(float) * width * height);

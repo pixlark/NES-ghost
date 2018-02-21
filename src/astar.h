@@ -6,7 +6,7 @@
 #include "heap.h"
 
 List<Vector2i> a_star(
-	int * map, int width, int height,
+	const int * map, int width, int height,
 	Vector2i start, Vector2i dest);
 
 #endif

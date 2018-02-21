@@ -69,6 +69,14 @@ struct Level {
 	List<Entity> walls;
 };
 
+struct Game {
+	const Level  * level;
+	const Player * player;
+	const Ghost  * ghost;
+};
+
+static Game game;
+
 inline int to_index(Vector2i pos, int w = Level::play_w)
 {
 	return pos.x + pos.y * w;
@@ -122,11 +130,11 @@ void make_player(Player * p, Vector2i pos, int power_level)
 	p->type = PLAYER;
 }
 
-void update_player(Player * p, Level * level)
+void update_player(Player * p)
 {
 	p->tex.pos = Vector2i(32 + (16 * p->power_level), 16);
 	if (!p->moving) {
-		if (!level->grid[to_index(p->grid_pos + p->queued_direction)]) {
+		if (!game.level->grid[to_index(p->grid_pos + p->queued_direction)]) {
 			p->direction = p->queued_direction;
 		} else {
 			p->direction = Vector2i(0, 0);
@@ -174,12 +182,12 @@ void make_ghost(Ghost * g, Vector2i pos, int power_type)
 	g->type = GHOST;
 }
 
-void update_ghost(Ghost * g, Player * player, Level * level)
+void update_ghost(Ghost * g)
 {
 	if (!g->moving) {
 		List<Vector2i> dirs = a_star(
-			level->grid, Level::play_w, Level::play_h,
-			g->grid_pos, player->grid_pos);
+			game.level->grid, Level::play_w, Level::play_h,
+			g->grid_pos, game.player->grid_pos);
 		if (dirs.len > 0) {
 			g->direction = dirs[0];
 		} else {
@@ -304,30 +312,34 @@ Vector2i get_empty_level_spot(Level * l)
 	return pos;
 }
 
-void draw_level(Level * l, int power)
+void draw_level(Level * l)
 {
 	for (int i = 0; i < l->walls.len; i++) {
 		draw_entity(l->walls.arr + i);
 	}
 	Render::render(
 		Vector2i(l->crystal_pos.x * 16, l->crystal_pos.y * 16),
-		Vector2i(power * 16 + 48, 0), Vector2i(16, 16), Vector2f(1, 1));
+		Vector2i(game.player->power_max * 16 + 48, 0), Vector2i(16, 16), Vector2f(1, 1));
 }
 
-void update_level(Level * l, Player * player, Ghost * ghost)
+void check_crystal(Level * level, Player * player, Ghost * ghost)
 {
-	if (player->grid_pos.x == l->crystal_pos.x && player->grid_pos.y == l->crystal_pos.y) {
+	if (player->grid_pos.x == level->crystal_pos.x &&
+		player->grid_pos.y == level->crystal_pos.y) {
 		// Player stuff
-		// TODO(pixlark): Is it ok for this to be here?
 		player->power_max++;
 		player->power_level = player->power_max;
 		player->queued_direction = Vector2i(0, 0);
 		// Ghost stuff
-		// TODO(pixlark): Also don't think this should be here. Decouple somehow?
-		ghost->grid_pos = get_empty_level_spot(l);
+		ghost->grid_pos = get_empty_level_spot(level);
 		// Level generation
-		generate_level(l);
+		generate_level(level);
 	}
+}
+
+void update_level(Level * l)
+{
+	// Nothing for now...
 }
 
 void tick_delta_time()
@@ -349,12 +361,15 @@ int main()
 
 	Player player;
 	make_player(&player, Vector2i(1, 1), 0);
+	game.player = &player;
 	
 	Level level;
 	generate_level(&level);
+	game.level = &level;
 
 	Ghost ghost;
 	make_ghost(&ghost, get_empty_level_spot(&level), 0);
+	game.ghost = &ghost;
 	
 	SDL_Event event;
 	bool running = true;
@@ -369,13 +384,14 @@ int main()
 				break;
 			}
 		}
-		update_player(&player, &level);
-		update_ghost (&ghost,  &player, &level);
-		update_level (&level,  &player, &ghost);
+		update_player(&player);
+		update_ghost (&ghost);
+		update_level (&level);
+		check_crystal(&level, &player, &ghost);
 		Render::clear(RGBA(36, 56, 225, 255));
-		draw_level(&level, player.power_max);
-		draw_entity(&player);
-		draw_entity(&ghost);
+		draw_level   (&level);
+		draw_entity  (&player);
+		draw_entity  (&ghost);
 		
 		{
 			// Draw UI stuff
