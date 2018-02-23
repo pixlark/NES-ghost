@@ -40,7 +40,7 @@ struct Entity {
 };
 
 struct Player : Entity {
-	int power_max = 0;
+	int power_max;
 	int power_level;
 	Vector2i direction;
 	Vector2i queued_direction;
@@ -72,7 +72,8 @@ struct Level {
 struct Game {
 	const Level  * level;
 	const Player * player;
-	const Ghost  * ghost;
+	//const Ghost  * ghost;
+	const List<Ghost> * ghosts;
 };
 
 static Game game;
@@ -127,12 +128,13 @@ void make_player(Player * p, Vector2i pos, int power_level)
 	tex.scale = Vector2f(1, 1);
 	make_entity(p, pos, tex);
 	p->power_level = power_level;
+	p->power_max   = power_level;
 	p->type = PLAYER;
 }
 
 void update_player(Player * p)
 {
-	p->tex.pos = Vector2i(32 + (16 * p->power_level), 16);
+	p->tex.pos = Vector2i(48 + (16 * p->power_level), 16);
 	if (!p->moving) {
 		if (!game.level->grid[to_index(p->grid_pos + p->queued_direction)]) {
 			p->direction = p->queued_direction;
@@ -159,7 +161,7 @@ void keydown_player(Player * p, SDL_Scancode scancode)
 		p->queued_direction = Vector2i(+1, +0);
 	} break;
 	case SDL_SCANCODE_LEFT: {
-		if (p->power_level > 1) {
+		if (p->power_level > 0) {
 			p->power_level--;
 		}
 	} break;
@@ -174,7 +176,7 @@ void keydown_player(Player * p, SDL_Scancode scancode)
 void make_ghost(Ghost * g, Vector2i pos, int power_type)
 {
 	Texture tex;
-	tex.pos = Vector2i(48 + (16 * power_type), 48);
+	tex.pos = Vector2i(48 + (16 * power_type), 32);
 	tex.dim = Vector2i(16, 16);
 	tex.scale = Vector2f(1, 1);
 	make_entity(g, pos, tex);
@@ -188,11 +190,18 @@ void update_ghost(Ghost * g)
 		List<Vector2i> dirs = a_star(
 			game.level->grid, Level::play_w, Level::play_h,
 			g->grid_pos, game.player->grid_pos);
-		if (dirs.len > 0) {
-			g->direction = dirs[0];
-		} else {
+		if (dirs.len == 0) {
 			g->direction = Vector2i(0, 0);
+			goto dealloc;
 		}
+		for (int i = 0; i < game.ghosts->len; i++) {
+			if ((g->grid_pos + dirs[0]) == (*game.ghosts)[i].grid_pos) {
+				g->direction = Vector2i(0, 0);
+				goto dealloc;
+			}
+		}
+		g->direction = dirs[0];
+	dealloc:
 		dirs.dealloc();
 	}
 	move_entity(g, g->grid_pos + g->direction);
@@ -291,7 +300,7 @@ void generate_level(Level * level)
 			if (level->grid[to_index(x, y)]) {
 				Entity e;
 				Texture t;
-				t.pos = Vector2i(32, 0);
+				t.pos = Vector2i(0, 5 * 16);
 				t.dim = Vector2i(16, 16);
 				t.scale = Vector2f(1, 1);
 				make_entity(&e, Vector2i(x, y), t);
@@ -302,7 +311,7 @@ void generate_level(Level * level)
 	level->top_left = !level->top_left;
 }
 
-Vector2i get_empty_level_spot(Level * l)
+Vector2i get_empty_level_spot(const Level * l)
 {
 	Vector2i pos;
 	do {
@@ -319,10 +328,27 @@ void draw_level(Level * l)
 	}
 	Render::render(
 		Vector2i(l->crystal_pos.x * 16, l->crystal_pos.y * 16),
-		Vector2i(game.player->power_max * 16 + 48, 0), Vector2i(16, 16), Vector2f(1, 1));
+		Vector2i((game.player->power_max + 1) * 16 + 48, 0), Vector2i(16, 16), Vector2f(1, 1));
 }
 
-void check_crystal(Level * level, Player * player, Ghost * ghost)
+
+int ghosts_per_level[] = {
+	1, 2, 2, 3,
+	3, 4, 4, 5,
+};
+
+void generate_ghosts(List<Ghost> * ghosts, int power)
+{
+	ghosts->dealloc();
+	ghosts->alloc();
+	for (int i = 0; i < ghosts_per_level[power]; i++) {
+		Ghost g;
+		make_ghost(&g, get_empty_level_spot(game.level), rand() % (power + 1));
+		ghosts->push(g);
+	}
+}
+
+void check_crystal(Level * level, Player * player, List<Ghost> * ghosts)
 {
 	if (player->grid_pos.x == level->crystal_pos.x &&
 		player->grid_pos.y == level->crystal_pos.y) {
@@ -331,9 +357,35 @@ void check_crystal(Level * level, Player * player, Ghost * ghost)
 		player->power_level = player->power_max;
 		player->queued_direction = Vector2i(0, 0);
 		// Ghost stuff
-		ghost->grid_pos = get_empty_level_spot(level);
+		generate_ghosts(ghosts, player->power_max);
 		// Level generation
 		generate_level(level);
+	}
+}
+
+bool colliding(Entity * a, Entity * b, int buffer)
+{
+	Vector2i bf = Vector2i(buffer, buffer);
+	Vector2i p0 = a->pos     + bf;
+	Vector2i d0 = a->tex.dim - bf; 
+	Vector2i p1 = b->pos     + bf;
+	Vector2i d1 = b->tex.dim - bf;
+	if (p0.x < p1.x + d1.x && p0.x + d0.x > p1.x &&
+		p0.y < p1.y + d1.y && p0.y + d0.y > p1.y) {
+		return true;
+	}
+	return false;
+}
+
+void check_collision(Player * player, List<Ghost> * ghosts)
+{
+	for (int i = ghosts->len - 1; i >= 0; i--) {
+		if (colliding(player, ghosts->arr + i, 4)) {
+			if (player->power_level == (*ghosts)[i].power_type) {
+				ghosts->remove(i);
+			} else {
+			}
+		}
 	}
 }
 
@@ -360,16 +412,16 @@ int main()
 	window = make_window();
 
 	Player player;
-	make_player(&player, Vector2i(1, 1), 0);
+	make_player(&player, Vector2i(1, 1), -1);
 	game.player = &player;
 	
 	Level level;
 	generate_level(&level);
 	game.level = &level;
 
-	Ghost ghost;
-	make_ghost(&ghost, get_empty_level_spot(&level), 0);
-	game.ghost = &ghost;
+	List<Ghost> ghosts;
+	ghosts.alloc();
+	game.ghosts = &ghosts;
 	
 	SDL_Event event;
 	bool running = true;
@@ -385,25 +437,30 @@ int main()
 			}
 		}
 		update_player(&player);
-		update_ghost (&ghost);
+		for (int i = 0; i < ghosts.len; i++) {
+			update_ghost (ghosts.arr + i);
+		}
 		update_level (&level);
-		check_crystal(&level, &player, &ghost);
+		check_crystal(&level, &player, &ghosts);
+		check_collision(&player, &ghosts);
 		Render::clear(RGBA(36, 56, 225, 255));
 		draw_level   (&level);
 		draw_entity  (&player);
-		draw_entity  (&ghost);
+		for (int i = 0; i < ghosts.len; i++) {
+			draw_entity  (ghosts.arr + i);
+		}
 		
 		{
 			// Draw UI stuff
 			// TODO(pixlark): Put this all in a UI struct or something
 			for (int i = 0; i < 8; i++) {
-				if (i == player.power_level - 1) {
+				if (i == player.power_level) {
 					Render::render(Vector2i(i * 32, window.res.y - 32), Vector2i(0, 48), Vector2i(32, 32), Vector2f(1, 1));
 				} else {
 					Render::render(Vector2i(i * 32, window.res.y - 32), Vector2i(0, 16), Vector2i(32, 32), Vector2f(1, 1));
 				}
 			}
-			for (int i = 0; i < player.power_max; i++) {
+			for (int i = 0; i < player.power_max + 1; i++) {
 				Render::render(Vector2i(i * 32 + 8, window.res.y - 24), Vector2i(i * 16 + 48, 0), Vector2i(16, 16), Vector2f(1, 1));
 			}
 			Render::render(Vector2i(0, window.res.y - 48), Vector2i(0, 0), Vector2i(16, 16), Vector2f(16, 1));

@@ -11,14 +11,21 @@ win_lib_dirs =-L"G:\.minlib\SDL2-2.0.7\x86_64-w64-mingw32\lib" -L"G:\.minlib\gle
 # Filled options
 # TODO(pixlark): nix support
 win_full=$(out) $(opts) $(src) $(win_incl_dirs) $(win_lib_dirs) $(dyn_libs)
+get_atlas=pushd pallette; \
+		  ./pallette.exe atlas.pal 32,0,16,16,8 32,16,16,16,8 32,32,16,16,8 > nul; \
+		  cp expanded.png ../atlas.png; \
+		  popd;
 
 win:
 	@echo Building Release...
 	g++ $(win_full)
-	cp "G:\C++\2018\gl-backend\bin\render.dll" \
-   "bin\render.dll"
+	cp "G:\C++\2018\gl-backend\bin\render.dll" "bin\render.dll"
+	@echo Building Texture Atlas...
+	$(get_atlas)
 
 wing:
 	@echo Building Debug...
 	g++ -g $(win_full)
 	cp "G:\C++\2018\gl-backend\bin\render.dll" "bin\render.dll"
+	@echo Building Texture Atlas...
+	$(get_atlas)
