@@ -35,6 +35,7 @@ struct Entity {
 	Vector2i target_pos;
 	float move_t;
 	bool moving;
+	bool visible = true;
 	Texture  tex;
 	EntityType type;
 };
@@ -46,9 +47,19 @@ struct Player : Entity {
 	Vector2i queued_direction;
 };
 
+enum GhostState {
+	GHOST_ALIVE,
+	GHOST_DEAD,
+};
+
+#define GHOST_DEATH_TIMER_RESET 1.0
+#define GHOST_FLASH_TIMER_RESET 0.1
 struct Ghost : Entity {
 	int power_type;
 	Vector2i direction;
+	GhostState state;
+	float death_timer;
+	float flash_timer;
 };
 
 struct Window {
@@ -117,6 +128,7 @@ void move_entity(Entity * e, Vector2i target)
 
 void draw_entity(Entity * e)
 {
+	if (!e->visible) return;
 	Render::render(e->pos, e->tex.pos, e->tex.dim, e->tex.scale);
 }
 
@@ -170,6 +182,12 @@ void keydown_player(Player * p, SDL_Scancode scancode)
 			p->power_level++;
 		}
 	} break;
+	case SDL_SCANCODE_KP_6: {
+		p->power_max++;
+	} break;
+	case SDL_SCANCODE_KP_4: {
+		p->power_max--;
+	} break;
 	}
 }
 
@@ -184,8 +202,17 @@ void make_ghost(Ghost * g, Vector2i pos, int power_type)
 	g->type = GHOST;
 }
 
-void update_ghost(Ghost * g)
+bool update_ghost(Ghost * g)
 {
+	if (g->state == GHOST_DEAD) {
+		g->death_timer -= window.delta_time;
+		g->flash_timer -= window.delta_time;
+		if (g->flash_timer <= 0) {
+			g->visible = !g->visible;
+			g->flash_timer = GHOST_FLASH_TIMER_RESET;
+		}
+		return g->death_timer <= 0;
+	}
 	if (!g->moving) {
 		List<Vector2i> dirs = a_star(
 			game.level->grid, Level::play_w, Level::play_h,
@@ -195,7 +222,8 @@ void update_ghost(Ghost * g)
 			goto dealloc;
 		}
 		for (int i = 0; i < game.ghosts->len; i++) {
-			if ((g->grid_pos + dirs[0]) == (*game.ghosts)[i].grid_pos) {
+			if ((*game.ghosts)[i].state == GHOST_ALIVE &&
+				(g->grid_pos + dirs[0]) == (*game.ghosts)[i].grid_pos) {
 				g->direction = Vector2i(0, 0);
 				goto dealloc;
 			}
@@ -205,6 +233,22 @@ void update_ghost(Ghost * g)
 		dirs.dealloc();
 	}
 	move_entity(g, g->grid_pos + g->direction);
+	return false;
+}
+
+void kill_ghost(Ghost * g)
+{
+	if (g->state == GHOST_DEAD) return;
+	g->state = GHOST_DEAD;
+	// TODO(pixlark): Not very robust, if we want to make the ghost
+	// alive again, then we have to set the texture position
+	// again. But on the other hand, this time it's a one-time
+	// operation rather than an extra if-statement every
+	// frame. Probably doesn't matter either way but worth thinking
+	// about.
+	g->tex.pos.y = 48;
+	g->death_timer = GHOST_DEATH_TIMER_RESET;
+	g->flash_timer = GHOST_FLASH_TIMER_RESET;
 }
 
 Window make_window()
@@ -382,8 +426,7 @@ void check_collision(Player * player, List<Ghost> * ghosts)
 	for (int i = ghosts->len - 1; i >= 0; i--) {
 		if (colliding(player, ghosts->arr + i, 4)) {
 			if (player->power_level == (*ghosts)[i].power_type) {
-				ghosts->remove(i);
-			} else {
+				kill_ghost(ghosts->arr + i);
 			}
 		}
 	}
@@ -438,7 +481,9 @@ int main()
 		}
 		update_player(&player);
 		for (int i = 0; i < ghosts.len; i++) {
-			update_ghost (ghosts.arr + i);
+			if (update_ghost(ghosts.arr + i)) {
+				ghosts.remove(i);
+			}
 		}
 		update_level (&level);
 		check_crystal(&level, &player, &ghosts);
