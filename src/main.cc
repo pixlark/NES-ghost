@@ -10,6 +10,8 @@
 #include "astar.h"
 #include "heap.h"
 
+#define SQR(x) ((x) * (x))
+
 Vector2i directions[] = {
 	{+0, -1}, // UP
 	{-1, +0}, // LEFT
@@ -34,17 +36,22 @@ struct Entity {
 	Vector2i grid_pos;
 	Vector2i target_pos;
 	float move_t;
+	float move_div;
 	bool moving;
 	bool visible = true;
 	Texture  tex;
 	EntityType type;
 };
 
+#define PLAYER_DEATH_TIMER_RESET 1.0
+#define PLAYER_FLASH_TIMER_RESET 0.1
 struct Player : Entity {
 	int power_max;
 	int power_level;
 	Vector2i direction;
 	Vector2i queued_direction;
+	float death_timer;
+	float flash_timer;
 };
 
 enum GhostState {
@@ -60,6 +67,7 @@ struct Ghost : Entity {
 	GhostState state;
 	float death_timer;
 	float flash_timer;
+	int id;
 };
 
 struct Window {
@@ -80,11 +88,16 @@ struct Level {
 	List<Entity> walls;
 };
 
+enum GameState {
+	GAME_PLAYING,
+	GAME_LOSS,
+};
+
 struct Game {
 	const Level  * level;
 	const Player * player;
-	//const Ghost  * ghost;
 	const List<Ghost> * ghosts;
+	const GameState * game_state;
 };
 
 static Game game;
@@ -105,7 +118,9 @@ void make_entity(Entity * e, Vector2i pos, Texture tex)
 	e->grid_pos = pos;
 	e->target_pos = pos;
 	e->move_t = 0;
+	e->move_div = 0.3;
 	e->tex = tex;
+	e->moving = false;
 	e->type = ENTITY;
 }
 
@@ -114,7 +129,7 @@ void move_entity(Entity * e, Vector2i target)
 	if (target.x == e->grid_pos.x && target.y == e->grid_pos.y) return;
 	e->moving = true;
 	e->move_t += window.delta_time;
-	float t = e->move_t / 0.5;
+	float t = e->move_t / e->move_div;
 	e->pos.x = (e->grid_pos.x * 16) + t * ((target.x - e->grid_pos.x) * 16);
 	e->pos.y = (e->grid_pos.y * 16) + t * ((target.y - e->grid_pos.y) * 16);
 	if (t >= 1) {
@@ -141,11 +156,22 @@ void make_player(Player * p, Vector2i pos, int power_level)
 	make_entity(p, pos, tex);
 	p->power_level = power_level;
 	p->power_max   = power_level;
+	p->direction = Vector2i(0, 0);
+	p->queued_direction = Vector2i(0, 0);
 	p->type = PLAYER;
 }
 
-void update_player(Player * p)
+bool update_player(Player * p)
 {
+	if (*game.game_state == GAME_LOSS) {
+		p->death_timer -= window.delta_time;
+		p->flash_timer -= window.delta_time;
+		if (p->flash_timer <= 0) {
+			p->visible = !p->visible;
+			p->flash_timer = PLAYER_FLASH_TIMER_RESET;
+		}
+		return p->death_timer <= 0;
+	}
 	p->tex.pos = Vector2i(48 + (16 * p->power_level), 16);
 	if (!p->moving) {
 		if (!game.level->grid[to_index(p->grid_pos + p->queued_direction)]) {
@@ -155,6 +181,7 @@ void update_player(Player * p)
 		}
 	}
 	move_entity(p, p->grid_pos + p->direction);
+	return false;
 }
 
 void keydown_player(Player * p, SDL_Scancode scancode)
@@ -198,8 +225,10 @@ void make_ghost(Ghost * g, Vector2i pos, int power_type)
 	tex.dim = Vector2i(16, 16);
 	tex.scale = Vector2f(1, 1);
 	make_entity(g, pos, tex);
+	g->move_div = 0.3 + 0.2 * ((float) (rand() % 100) / 100.0);
 	g->power_type = power_type;
-	g->type = GHOST;
+	g->state = GHOST_ALIVE;
+	g->type  = GHOST;
 }
 
 bool update_ghost(Ghost * g)
@@ -212,8 +241,7 @@ bool update_ghost(Ghost * g)
 			g->flash_timer = GHOST_FLASH_TIMER_RESET;
 		}
 		return g->death_timer <= 0;
-	}
-	if (!g->moving) {
+	} else if (!g->moving) {
 		List<Vector2i> dirs = a_star(
 			game.level->grid, Level::play_w, Level::play_h,
 			g->grid_pos, game.player->grid_pos);
@@ -222,8 +250,8 @@ bool update_ghost(Ghost * g)
 			goto dealloc;
 		}
 		for (int i = 0; i < game.ghosts->len; i++) {
-			if ((*game.ghosts)[i].state == GHOST_ALIVE &&
-				(g->grid_pos + dirs[0]) == (*game.ghosts)[i].grid_pos) {
+			if ((*game.ghosts)[i].id == g->id) continue;
+			if (g->grid_pos + g->direction == (*game.ghosts)[i].grid_pos) {
 				g->direction = Vector2i(0, 0);
 				goto dealloc;
 			}
@@ -328,6 +356,7 @@ void generate_level(Level * level)
 	for (int i = 0; i < Level::play_w*Level::play_h; i++) level->grid[i] = 1;
 	tunnel_from_point(start);
 	{
+		// Readjust crystal pos
 		Vector2i dir = level->top_left ? Vector2i(-1, -1) : Vector2i(1, 1);
 		while (level->grid[to_index(level->crystal_pos)]) {
 			// TODO(pixlark): This has about a 1/2048 chance (I
@@ -381,15 +410,31 @@ int ghosts_per_level[] = {
 	3, 4, 4, 5,
 };
 
+#define MINIMUM_GHOST_DISTANCE 16 * 5
 void generate_ghosts(List<Ghost> * ghosts, int power)
 {
 	ghosts->dealloc();
 	ghosts->alloc();
 	for (int i = 0; i < ghosts_per_level[power]; i++) {
 		Ghost g;
-		make_ghost(&g, get_empty_level_spot(game.level), rand() % (power + 1));
+		int j = 0;
+		do {
+			j++;
+			make_ghost(&g, get_empty_level_spot(game.level), rand() % (power + 1));
+		} while (
+			SQR(MINIMUM_GHOST_DISTANCE) >
+			(SQR(g.pos.y - game.player->pos.y) + SQR(g.pos.x - game.player->pos.x)));
+		g.id = ghosts->len;
 		ghosts->push(g);
 	}
+}
+
+void reset_level(Level * level, List<Ghost> * ghosts, int power_level)
+{
+	// Level generation
+	generate_level(level);
+	// Ghost stuff
+	generate_ghosts(ghosts, power_level);
 }
 
 void check_crystal(Level * level, Player * player, List<Ghost> * ghosts)
@@ -399,11 +444,11 @@ void check_crystal(Level * level, Player * player, List<Ghost> * ghosts)
 		// Player stuff
 		player->power_max++;
 		player->power_level = player->power_max;
+		player->grid_pos = level->top_left ? Vector2i(1, 1) : Vector2i(Level::play_w - 2, Level::play_h - 2);
+		player->pos = Vector2i(player->grid_pos.x * 16, player->grid_pos.y * 16);
 		player->queued_direction = Vector2i(0, 0);
-		// Ghost stuff
-		generate_ghosts(ghosts, player->power_max);
-		// Level generation
-		generate_level(level);
+	
+		reset_level(level, ghosts, player->power_max);
 	}
 }
 
@@ -421,12 +466,17 @@ bool colliding(Entity * a, Entity * b, int buffer)
 	return false;
 }
 
-void check_collision(Player * player, List<Ghost> * ghosts)
+void check_collision(Player * player, List<Ghost> * ghosts, GameState * game_state)
 {
 	for (int i = ghosts->len - 1; i >= 0; i--) {
-		if (colliding(player, ghosts->arr + i, 4)) {
+		if ((*ghosts)[i].state == GHOST_ALIVE &&
+			colliding(player, ghosts->arr + i, 4)) {
 			if (player->power_level == (*ghosts)[i].power_type) {
 				kill_ghost(ghosts->arr + i);
+			} else if (*game_state != GAME_LOSS) {
+				// TODO(pixlark): This should really be somewhere else
+				player->death_timer = PLAYER_DEATH_TIMER_RESET;
+				(*game_state) = GAME_LOSS;
 			}
 		}
 	}
@@ -454,6 +504,9 @@ int main()
 	SDL_Init(SDL_INIT_VIDEO);
 	window = make_window();
 
+	GameState game_state = GAME_PLAYING;
+	game.game_state = &game_state;
+	
 	Player player;
 	make_player(&player, Vector2i(1, 1), -1);
 	game.player = &player;
@@ -475,11 +528,20 @@ int main()
 				running = false;
 				break;
 			case SDL_KEYDOWN:
-				keydown_player(&player, event.key.keysym.scancode);
+				if (game_state == GAME_PLAYING) {
+					keydown_player(&player, event.key.keysym.scancode);
+				}
 				break;
 			}
 		}
-		update_player(&player);
+
+		// Player dies
+		if (update_player(&player)) {
+			make_player(&player, Vector2i(1, 1), -1);
+			level.top_left = true; // TODO(pixlark): Klugey way to do it
+			reset_level(&level, &ghosts, -1);
+			game_state = GAME_PLAYING;
+		}
 		for (int i = 0; i < ghosts.len; i++) {
 			if (update_ghost(ghosts.arr + i)) {
 				ghosts.remove(i);
@@ -487,12 +549,13 @@ int main()
 		}
 		update_level (&level);
 		check_crystal(&level, &player, &ghosts);
-		check_collision(&player, &ghosts);
+		check_collision(&player, &ghosts, &game_state);
+		
 		Render::clear(RGBA(36, 56, 225, 255));
-		draw_level   (&level);
-		draw_entity  (&player);
+		draw_level (&level);
+		draw_entity(&player);
 		for (int i = 0; i < ghosts.len; i++) {
-			draw_entity  (ghosts.arr + i);
+			draw_entity(ghosts.arr + i);
 		}
 		
 		{
