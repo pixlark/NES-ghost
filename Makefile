@@ -2,11 +2,11 @@
 src=src/main.cc src/astar.cc
 out=-o bin/nes -Wno-write-strings
 opts=-std=c++11
-dyn_libs=-lSDL2 -lrender -lutility
+dyn_libs=-lSDL2main -lSDL2 -lSDL2_mixer -lrender -lutility
 
 # Windows
 win_incl_dirs=-I"G:\.minlib\SDL2-2.0.7\x86_64-w64-mingw32\include" -I"G:\.libraries\GLEW\include" -I"G:\C++\2018\gl-backend\src" -I"G:\C++\2018\utility"
-win_lib_dirs =-L"G:\.minlib\SDL2-2.0.7\x86_64-w64-mingw32\lib" -L"G:\.minlib\glew-2.1.0\lib" -L"G:\C++\2018\gl-backend\bin" -L"G:\C++\2018\utility"
+win_lib_dirs =-L"G:\.minlib\SDL2-2.0.7\x86_64-w64-mingw32\lib" -L"G:\.minlib\SDL2_mixer-2.0.2\x86_64-w64-mingw32\lib" -L"G:\.minlib\glew-2.1.0\lib" -L"G:\C++\2018\gl-backend\bin" -L"G:\C++\2018\utility"
 
 # Filled options
 # TODO(pixlark): nix support

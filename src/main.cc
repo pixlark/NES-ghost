@@ -1,11 +1,14 @@
-#define SDL_MAIN_HANDLED
-#include <SDL2/SDL.h>
 #include <math.h>
-#include <render.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
 #include <utility.h>
+
+#define SDL_MAIN_HANDLED
+#include <SDL2/SDL.h>
+#include <SDL2/SDL_mixer.h>
+
+#include <render.h>
 
 #include "astar.h"
 #include "heap.h"
@@ -18,6 +21,42 @@ Vector2i directions[] = {
 	{+0, +1}, // DOWN
 	{+1, +0}, // RIGHT
 };
+
+struct Sounds {
+	Mix_Music * bgm;
+	Mix_Chunk * player_death;
+	Mix_Chunk * ghost_death;
+	Mix_Chunk * crystal_grab;
+};
+
+Sounds sounds;
+
+void init_sounds()
+{
+	char * base = SDL_GetBasePath();
+	auto load_song = [base](Mix_Music ** chunk, char * rel) {
+		StringBuilder builder;
+		builder.alloc();
+		builder.append(base);
+		builder.append(rel);
+		printf("'%s'\n", builder.str());
+		*chunk = Mix_LoadMUS(builder.str());
+		builder.dealloc();
+	};
+	auto load = [base](Mix_Chunk ** chunk, char * rel) {
+		StringBuilder builder;
+		builder.alloc();
+		builder.append(base);
+		builder.append(rel);
+		printf("'%s'\n", builder.str());
+		*chunk = Mix_LoadWAV(builder.str());
+		builder.dealloc();
+	};
+	load_song(&sounds.bgm, "..\\sound\\song.ogg");
+	load(&sounds.player_death, "..\\sound\\lose.ogg");
+	load(&sounds.ghost_death,  "..\\sound\\yelp.ogg");
+	load(&sounds.crystal_grab,  "..\\sound\\ring.ogg");
+}
 
 struct Texture {
 	Vector2i pos;
@@ -231,7 +270,9 @@ void make_ghost(Ghost * g, Vector2i pos, int power_type)
 	g->type  = GHOST;
 }
 
-bool update_ghost(Ghost * g)
+// Passing in ghost_list is really just a kluge to fix a bug, but I
+// don't really care at this point.
+bool update_ghost(Ghost * g, List<Ghost> * ghost_list)
 {
 	if (g->state == GHOST_DEAD) {
 		g->death_timer -= window.delta_time;
@@ -250,10 +291,15 @@ bool update_ghost(Ghost * g)
 			goto dealloc;
 		}
 		for (int i = 0; i < game.ghosts->len; i++) {
-			if ((*game.ghosts)[i].id == g->id) continue;
-			if (g->grid_pos + g->direction == (*game.ghosts)[i].grid_pos) {
+			if ((*ghost_list)[i].id == g->id) continue;
+			if (g->grid_pos + g->direction == (*ghost_list)[i].grid_pos) {
 				g->direction = Vector2i(0, 0);
 				goto dealloc;
+			}
+			// Kluge Central Station is coming up on your right
+			if (g->grid_pos == (*ghost_list)[i].grid_pos) {
+				(*ghost_list)[i].direction.x *= -1;
+				(*ghost_list)[i].direction.y *= -1;
 			}
 		}
 		g->direction = dirs[0];
@@ -268,6 +314,7 @@ void kill_ghost(Ghost * g)
 {
 	if (g->state == GHOST_DEAD) return;
 	g->state = GHOST_DEAD;
+	Mix_PlayChannel(-1, sounds.ghost_death, 0);	
 	// TODO(pixlark): Not very robust, if we want to make the ghost
 	// alive again, then we have to set the texture position
 	// again. But on the other hand, this time it's a one-time
@@ -441,6 +488,9 @@ void check_crystal(Level * level, Player * player, List<Ghost> * ghosts)
 {
 	if (player->grid_pos.x == level->crystal_pos.x &&
 		player->grid_pos.y == level->crystal_pos.y) {
+		
+		Mix_PlayChannel(-1, sounds.crystal_grab, 0);
+		
 		// Player stuff
 		player->power_max++;
 		player->power_level = player->power_max;
@@ -477,6 +527,7 @@ void check_collision(Player * player, List<Ghost> * ghosts, GameState * game_sta
 				// TODO(pixlark): This should really be somewhere else
 				player->death_timer = PLAYER_DEATH_TIMER_RESET;
 				(*game_state) = GAME_LOSS;
+				Mix_PlayChannel(-1, sounds.player_death, 0);
 			}
 		}
 	}
@@ -501,8 +552,13 @@ int main()
 {
 	srand(time(NULL));
 	
-	SDL_Init(SDL_INIT_VIDEO);
+	SDL_Init(SDL_INIT_VIDEO|SDL_INIT_AUDIO);
 	window = make_window();
+
+	Mix_Init(MIX_INIT_OGG);
+	Mix_OpenAudio(MIX_DEFAULT_FREQUENCY, MIX_DEFAULT_FORMAT, 2, 1024);
+	init_sounds();
+	Mix_PlayMusic(sounds.bgm, -1);
 
 	GameState game_state = GAME_PLAYING;
 	game.game_state = &game_state;
@@ -543,7 +599,7 @@ int main()
 			game_state = GAME_PLAYING;
 		}
 		for (int i = 0; i < ghosts.len; i++) {
-			if (update_ghost(ghosts.arr + i)) {
+			if (update_ghost(ghosts.arr + i, &ghosts)) {
 				ghosts.remove(i);
 			}
 		}
