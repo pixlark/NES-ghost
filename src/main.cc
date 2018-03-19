@@ -27,6 +27,7 @@ struct Sounds {
 	Mix_Chunk * player_death;
 	Mix_Chunk * ghost_death;
 	Mix_Chunk * crystal_grab;
+	Mix_Chunk * won_game;
 };
 
 Sounds sounds;
@@ -52,10 +53,11 @@ void init_sounds()
 		*chunk = Mix_LoadWAV(builder.str());
 		builder.dealloc();
 	};
-	load_song(&sounds.bgm, "..\\sound\\song.ogg");
-	load(&sounds.player_death, "..\\sound\\lose.ogg");
-	load(&sounds.ghost_death,  "..\\sound\\yelp.ogg");
+	load_song(&sounds.bgm,      "..\\sound\\song.ogg");
+	load(&sounds.player_death,  "..\\sound\\lose.ogg");
+	load(&sounds.ghost_death,   "..\\sound\\yelp.ogg");
 	load(&sounds.crystal_grab,  "..\\sound\\ring.ogg");
+	load(&sounds.won_game,  "..\\sound\\win.ogg");
 }
 
 struct Texture {
@@ -130,6 +132,7 @@ struct Level {
 enum GameState {
 	GAME_PLAYING,
 	GAME_LOSS,
+	GAME_WIN,
 };
 
 struct Game {
@@ -484,7 +487,7 @@ void reset_level(Level * level, List<Ghost> * ghosts, int power_level)
 	generate_ghosts(ghosts, power_level);
 }
 
-void check_crystal(Level * level, Player * player, List<Ghost> * ghosts)
+int check_crystal(Level * level, Player * player, List<Ghost> * ghosts)
 {
 	if (player->grid_pos.x == level->crystal_pos.x &&
 		player->grid_pos.y == level->crystal_pos.y) {
@@ -493,13 +496,19 @@ void check_crystal(Level * level, Player * player, List<Ghost> * ghosts)
 		
 		// Player stuff
 		player->power_max++;
-		player->power_level = player->power_max;
-		player->grid_pos = level->top_left ? Vector2i(1, 1) : Vector2i(Level::play_w - 2, Level::play_h - 2);
-		player->pos = Vector2i(player->grid_pos.x * 16, player->grid_pos.y * 16);
-		player->queued_direction = Vector2i(0, 0);
-	
-		reset_level(level, ghosts, player->power_max);
+		
+		if (player->power_max < 8) {
+			player->power_level = player->power_max;
+			player->grid_pos = level->top_left ? Vector2i(1, 1) : Vector2i(Level::play_w - 2, Level::play_h - 2);
+			player->pos = Vector2i(player->grid_pos.x * 16, player->grid_pos.y * 16);
+			player->queued_direction = Vector2i(0, 0);
+			reset_level(level, ghosts, player->power_max);
+		} else {
+			Mix_PlayChannel(-1, sounds.won_game, 0);
+			return 1;
+		}
 	}
+	return 0;
 }
 
 bool colliding(Entity * a, Entity * b, int buffer)
@@ -531,11 +540,6 @@ void check_collision(Player * player, List<Ghost> * ghosts, GameState * game_sta
 			}
 		}
 	}
-}
-
-void update_level(Level * l)
-{
-	// Nothing for now...
 }
 
 void tick_delta_time()
@@ -590,22 +594,26 @@ int main()
 				break;
 			}
 		}
-
-		// Player dies
-		if (update_player(&player)) {
-			make_player(&player, Vector2i(1, 1), -1);
-			level.top_left = true; // TODO(pixlark): Klugey way to do it
-			reset_level(&level, &ghosts, -1);
-			game_state = GAME_PLAYING;
-		}
-		for (int i = 0; i < ghosts.len; i++) {
-			if (update_ghost(ghosts.arr + i, &ghosts)) {
-				ghosts.remove(i);
+		if (game_state != GAME_WIN) {
+			// Player dies
+			if (update_player(&player)) {
+				make_player(&player, Vector2i(1, 1), -1);
+				level.top_left = true; // TODO(pixlark): Klugey way to do it
+				reset_level(&level, &ghosts, -1);
+				game_state = GAME_PLAYING;
 			}
+			for (int i = 0; i < ghosts.len; i++) {
+				if (update_ghost(ghosts.arr + i, &ghosts)) {
+					ghosts.remove(i);
+				}
+			}
+			if (check_crystal(&level, &player, &ghosts)) {
+				game_state = GAME_WIN;
+			};
+			check_collision(&player, &ghosts, &game_state);
+		} else {
+			if (Mix_Playing(-1) == 0) return 0;
 		}
-		update_level (&level);
-		check_crystal(&level, &player, &ghosts);
-		check_collision(&player, &ghosts, &game_state);
 		
 		Render::clear(RGBA(36, 56, 225, 255));
 		draw_level (&level);
@@ -613,7 +621,7 @@ int main()
 		for (int i = 0; i < ghosts.len; i++) {
 			draw_entity(ghosts.arr + i);
 		}
-		
+
 		{
 			// Draw UI stuff
 			// TODO(pixlark): Put this all in a UI struct or something

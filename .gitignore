@@ -1,6 +1,8 @@
-bin/
 bin/*
 *.pyxel
 
 pallette/expanded.png
 pallette/pallette.exe
+
+releases/
+releases/*
